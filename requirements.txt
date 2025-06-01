@@ -1,3 +1,4 @@
 selenium>=4.33.0
 requests>=2.31.0
-beautifulsoup4>=4.13.0 
+beautifulsoup4>=4.13.0
+webdriver-manager 

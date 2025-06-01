@@ -14,13 +14,14 @@ import logging
 # 禁用不必要的日志
 logging.getLogger('selenium').setLevel(logging.ERROR)
 os.environ['WDM_LOG_LEVEL'] = '0'
-
+seen_urls = set()
 class StreamMonitor:
     def __init__(self):
         self.active_monitors = {}  # 存储活跃的监控 {url: driver}
         self.url_last_modified = 0  # url.txt 的最后修改时间
         self.running = True
         self.load_config()
+        self.recording_status = {}  # 存储录制状态 {url: {"status": "recording/waiting", "start_time": timestamp}}
         
     def load_config(self):
         """加载配置文件"""
@@ -62,34 +63,50 @@ class StreamMonitor:
         """读取url.txt中的URL列表"""
         try:
             with open('url.txt', 'r', encoding='utf-8') as f:
-                return [line.strip() for line in f if line.strip()]
+                urls = []
+                for line in f:
+                    url = line.strip()
+                    if url:
+                        # 分割 URL，只保留到直播间 ID 的部分
+                        base_url = url.split('?')[0]  # 去掉查询参数
+                        urls.append(base_url)
+                return urls
         except Exception as e:
             print(f"读取url.txt出错: {str(e)}")
             return []
 
-    def download_stream(self, url):
+    def download_stream(self, stream_url, url):
         try:
             save_dir = self.config['download_dir']
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
             
+            # 获取直播间ID作为文件名的一部分
+            room_id = url.split('/')[-1]
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f'stream_{timestamp}.flv'
+            filename = f'stream_{room_id}_{timestamp}.flv'
             filepath = os.path.join(save_dir, filename)
             
             print(f"\n开始下载流媒体文件: {filename}")
             print(f"保存到: {filepath}")
             print("下载中...")
+            seen_urls.add(stream_url)
+            self.recording_status[url] = {
+                "status": "recording",
+                "start_time": datetime.now(),
+                "stream_url": stream_url,
+                "room_id": room_id  # 添加房间ID到状态信息中
+            }
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Referer': 'https://live.douyin.com/',
+                'Referer': url,  # 添加直播间URL作为Referer
                 'Accept': '*/*',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Connection': 'keep-alive'
             }
             
-            response = requests.get(url, headers=headers, stream=True)
+            response = requests.get(stream_url, headers=headers, stream=True)
             response.raise_for_status()
             
             with open(filepath, 'wb') as f:
@@ -105,7 +122,6 @@ class StreamMonitor:
     def capture_stream_urls(self, driver, url):
         try:
             logs = driver.get_log('performance')
-            stream_urls = set()
             
             for log in logs:
                 try:
@@ -115,12 +131,10 @@ class StreamMonitor:
                         request_url = request.get('request', {}).get('url', '')
                         request_type = request.get('type', '')
                         
-                        if (request_type.lower() == 'fetch' or 'fetch' in request_type.lower()) and 'stream' in request_url.lower():
-                            if request_url.endswith('.flv') or 'stream-' in request_url:
-                                stream_urls.add(request_url)
+                        if (request_type.lower() == 'fetch' or 'fetch' in request_type.lower()) and 'stream' in request_url.lower() and 'pull-flv' in request_url.lower():
+                            return request_url
                 except:
                     continue
-            return stream_urls
             
         except Exception as e:
             print(f"捕获流媒体URL出错: {str(e)}")
@@ -171,35 +185,69 @@ class StreamMonitor:
             self.active_monitors[url] = driver
             driver.get(url)
             
-            seen_urls = set()
+
+
             
             while self.running and url in self.active_monitors:
                 try:
-                    print(f"\n检查页面新的流媒体链接: {url}")
+
                     driver.refresh()
                     time.sleep(2)
                     
-                    new_urls = self.capture_stream_urls(driver, url)
-                    
-                    for stream_url in new_urls:
-                        if stream_url not in seen_urls:
-                            print(f"\n发现新的stream URL: {stream_url}")
-                            print("准备下载...")
-                            
-                            if self.download_stream(stream_url):
-                                print("下载成功！")
-                                seen_urls.add(stream_url)
-                            else:
-                                print("下载失败，将在下次检测时重试")
-                    
+                    stream_url = self.capture_stream_urls(driver, url)
+
+                    if stream_url not in seen_urls and stream_url:
+                        print(f"\n发现新的stream URL: {stream_url}")
+                        print("准备下载...")
+                        
+                        if not self.download_stream(stream_url,url):
+                            print("下载失败，将在下次检测时重试")
+                            self.recording_status[url] = {"status": "waiting", "start_time": None}
+
+                    else:
+                        self.recording_status[url] = {"status": "waiting", "start_time": None}
+
                     time.sleep(5)  # 检查间隔
                     
                 except Exception as e:
                     print(f"监控过程出错: {str(e)}")
+                    self.recording_status[url] = {"status": "error", "start_time": None, "error": str(e)}
                     time.sleep(5)  # 出错后等待一段时间再继续
                     
         except Exception as e:
             print(f"创建监控出错: {str(e)}")
+            if url in self.recording_status:
+                self.recording_status[url] = {"status": "error", "start_time": None, "error": str(e)}
+
+    def show_status(self):
+        """显示所有直播间的状态"""
+        print("\n=== 直播间状态 ===")
+        
+        # 检查是否有正在监控的直播间
+        if not self.active_monitors and not self.recording_status:
+            print("当前没有监控的直播间")
+            return
+        
+        # 显示所有监控中的直播间状态
+        for url in self.active_monitors.keys():
+            print(f"\n直播间: {url}")
+            if url in self.recording_status:
+                status = self.recording_status[url]
+                if status["status"] == "recording":
+                    duration = datetime.now() - status["start_time"]
+                    hours = duration.seconds // 3600
+                    minutes = (duration.seconds % 3600) // 60
+                    seconds = duration.seconds % 60
+                    print(f"状态: 正在录制")
+                    print(f"开始时间: {status['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"已录制时长: {hours}小时{minutes}分钟{seconds}秒")
+
+                elif status["status"] == "waiting":
+                    print("状态: 等待直播开始")
+                elif status["status"] == "error":
+                    print(f"状态: 发生错误 - {status.get('error', '未知错误')}")
+            else:
+                print("状态: 正在初始化监控...")
 
     def check_url_updates(self):
         """检查url.txt更新的线程函数"""
@@ -251,6 +299,18 @@ class StreamMonitor:
                 thread = threading.Thread(target=self.monitor_url, args=(url,))
                 thread.daemon = True
                 thread.start()
+            
+            # 启动状态显示线程
+            def status_display_thread():
+                # 给予初始化时间
+                time.sleep(5)  # 等待5秒，让监控线程有时间初始化
+                while self.running:
+                    self.show_status()
+                    time.sleep(30)  # 每30秒更新一次状态
+            
+            status_thread = threading.Thread(target=status_display_thread)
+            status_thread.daemon = True
+            status_thread.start()
             
             # 保持主线程运行
             while True:
