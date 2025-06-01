@@ -9,6 +9,11 @@ import os
 from datetime import datetime
 import threading
 import sys
+import logging
+
+# 禁用不必要的日志
+logging.getLogger('selenium').setLevel(logging.ERROR)
+os.environ['WDM_LOG_LEVEL'] = '0'
 
 class StreamMonitor:
     def __init__(self):
@@ -82,16 +87,48 @@ class StreamMonitor:
             print(f"捕获流媒体URL出错: {str(e)}")
             return set()
 
+    def create_chrome_driver(self):
+        """创建配置好的Chrome驱动"""
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless=new')  # 使用新版无界面模式
+        options.add_argument('--disable-gpu')  # 禁用GPU加速
+        options.add_argument('--log-level=3')  # 只显示重要日志
+        options.add_argument('--silent')  # 静默模式
+        options.add_argument('--disable-web-security')  # 禁用网页安全性检查
+        options.add_argument('--disable-webgl')  # 禁用WebGL
+        options.add_argument('--disable-software-rasterizer')  # 禁用软件光栅化
+        options.add_argument('--disable-dev-shm-usage')  # 禁用/dev/shm使用
+        options.add_argument('--no-sandbox')  # 禁用沙盒
+        options.add_argument('--ignore-certificate-errors')  # 忽略证书错误
+        options.add_argument('--disable-extensions')  # 禁用扩展
+        options.add_argument('--disable-notifications')  # 禁用通知
+        options.add_experimental_option('excludeSwitches', ['enable-logging', 'enable-automation'])
+        options.add_experimental_option('useAutomationExtension', False)
+        options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+        
+        # 添加性能优化参数
+        prefs = {
+            'profile.default_content_setting_values': {
+                'images': 2,  # 不加载图片
+                'javascript': 1,  # 允许JavaScript
+                'notifications': 2,  # 禁用通知
+                'plugins': 2  # 禁用插件
+            }
+        }
+        options.add_experimental_option('prefs', prefs)
+        
+        service = webdriver.chrome.service.Service(
+            log_output=os.devnull  # 将服务日志重定向到空
+        )
+        
+        return webdriver.Chrome(options=options, service=service)
+
     def monitor_url(self, url):
         """监控单个URL的线程函数"""
         try:
             print(f"\n开始监控页面: {url}")
             
-            options = webdriver.ChromeOptions()
-            options.add_argument('--headless')
-            options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
-            
-            driver = webdriver.Chrome(options=options)
+            driver = self.create_chrome_driver()
             self.active_monitors[url] = driver
             driver.get(url)
             
