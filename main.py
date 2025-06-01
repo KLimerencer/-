@@ -20,7 +20,44 @@ class StreamMonitor:
         self.active_monitors = {}  # 存储活跃的监控 {url: driver}
         self.url_last_modified = 0  # url.txt 的最后修改时间
         self.running = True
+        self.load_config()
         
+    def load_config(self):
+        """加载配置文件"""
+        try:
+            if not os.path.exists('config.json'):
+                self.config = {
+                    "download_dir": "downloads",
+                    "check_interval": 5
+                }
+                self.save_config()
+            else:
+                with open('config.json', 'r', encoding='utf-8') as f:
+                    self.config = json.load(f)
+        except Exception as e:
+            print(f"加载配置文件出错: {str(e)}")
+            self.config = {
+                "download_dir": "downloads",
+                "check_interval": 5
+            }
+    
+    def save_config(self):
+        """保存配置文件"""
+        try:
+            with open('config.json', 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"保存配置文件出错: {str(e)}")
+
+    def set_download_dir(self, path):
+        """设置下载目录"""
+        self.config['download_dir'] = path
+        self.save_config()
+        # 确保目录存在
+        if not os.path.exists(path):
+            os.makedirs(path)
+        print(f"下载目录已设置为: {path}")
+
     def read_urls(self):
         """读取url.txt中的URL列表"""
         try:
@@ -30,8 +67,9 @@ class StreamMonitor:
             print(f"读取url.txt出错: {str(e)}")
             return []
 
-    def download_stream(self, url, save_dir='downloads'):
+    def download_stream(self, url):
         try:
+            save_dir = self.config['download_dir']
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
             
@@ -40,6 +78,7 @@ class StreamMonitor:
             filepath = os.path.join(save_dir, filename)
             
             print(f"\n开始下载流媒体文件: {filename}")
+            print(f"保存到: {filepath}")
             print("下载中...")
             
             headers = {
