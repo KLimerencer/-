@@ -147,6 +147,7 @@ class StreamMonitor:
         options.add_argument('--disable-gpu')  # 禁用GPU加速
         options.add_argument('--log-level=3')  # 只显示重要日志
         options.add_argument('--silent')  # 静默模式
+        options.add_argument('--mute-audio')  # 完全静音
         options.add_argument('--disable-web-security')  # 禁用网页安全性检查
         options.add_argument('--disable-webgl')  # 禁用WebGL
         options.add_argument('--disable-software-rasterizer')  # 禁用软件光栅化
@@ -155,20 +156,54 @@ class StreamMonitor:
         options.add_argument('--ignore-certificate-errors')  # 忽略证书错误
         options.add_argument('--disable-extensions')  # 禁用扩展
         options.add_argument('--disable-notifications')  # 禁用通知
+        
+        # 添加更严格的媒体相关配置
+        options.add_argument('--autoplay-policy=no-user-gesture-required')
+        options.add_argument('--disable-audio-output')
+        options.add_argument('--disable-media-session-api')
+        
+        # 禁用各种媒体功能
+        prefs = {
+            'profile.default_content_setting_values': {
+                'media_stream': 2,  # 2表示阻止
+                'notifications': 2,
+                'automatic_downloads': 2,
+                'media_stream_mic': 2,
+                'media_stream_camera': 2,
+                'images': 2,
+                'javascript': 1,  # 1表示允许，因为我们需要JS来获取流URL
+                'plugins': 2,
+                'popups': 2,
+                'geolocation': 2,
+                'midi_sysex': 2,
+                'push_messaging': 2,
+                'ssl_cert_decisions': 2,
+                'metro_switch_to_desktop': 2,
+                'protected_media_identifier': 2,
+                'app_banner': 2,
+                'site_engagement': 2,
+                'durable_storage': 2
+            },
+            'profile.managed_default_content_settings': {
+                'images': 2,
+                'media_stream': 2,
+                'plugins': 2
+            },
+            'profile.managed_plugins_allowed_for_urls': [],
+            'profile.default_content_settings.popups': 2,
+            'profile.default_content_settings.plugins': 2,
+            'profile.default_content_settings.geolocation': 2,
+            'profile.default_content_settings.notifications': 2,
+            'profile.default_content_settings.media_stream': 2,
+            'profile.default_content_settings.media_stream_mic': 2,
+            'profile.default_content_settings.media_stream_camera': 2,
+            'profile.default_content_settings.protocol_handlers': 2,
+            'profile.content_settings.exceptions.plugins.*,*.per_resource.adobe-flash-player': 2
+        }
+        options.add_experimental_option('prefs', prefs)
         options.add_experimental_option('excludeSwitches', ['enable-logging', 'enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
         options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
-        
-        # 添加性能优化参数
-        prefs = {
-            'profile.default_content_setting_values': {
-                'images': 2,  # 不加载图片
-                'javascript': 1,  # 允许JavaScript
-                'notifications': 2,  # 禁用通知
-                'plugins': 2  # 禁用插件
-            }
-        }
-        options.add_experimental_option('prefs', prefs)
         
         service = webdriver.chrome.service.Service(
             log_output=os.devnull  # 将服务日志重定向到空
@@ -181,18 +216,27 @@ class StreamMonitor:
         try:
             print(f"\n开始监控页面: {url}")
             
+            # 获取目标直播间ID
+            target_room_id = url.split('/')[-1]
+            
             driver = self.create_chrome_driver()
             self.active_monitors[url] = driver
-            driver.get(url)
-            
-
-
             
             while self.running and url in self.active_monitors:
                 try:
-
-                    driver.refresh()
+                    driver.get(url)
                     time.sleep(2)
+                    
+                    # 检查当前URL是否仍然是目标直播间
+                    current_url = driver.current_url
+                    current_room_id = current_url.split('/')[-1]
+                    
+                    if current_room_id != target_room_id:
+                        print(f"\n警告: 检测到页面重定向到其他直播间 (从 {target_room_id} 到 {current_room_id})")
+                        print("等待一段时间后重试...")
+                        self.recording_status[url] = {"status": "waiting", "start_time": None, "message": "直播间未开播"}
+                        time.sleep(30)  # 等待30秒后重试
+                        continue
                     
                     stream_url = self.capture_stream_urls(driver, url)
 
@@ -200,10 +244,9 @@ class StreamMonitor:
                         print(f"\n发现新的stream URL: {stream_url}")
                         print("准备下载...")
                         
-                        if not self.download_stream(stream_url,url):
+                        if not self.download_stream(stream_url, url):
                             print("下载失败，将在下次检测时重试")
                             self.recording_status[url] = {"status": "waiting", "start_time": None}
-
                     else:
                         self.recording_status[url] = {"status": "waiting", "start_time": None}
 
